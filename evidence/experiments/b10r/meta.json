@@ -1,0 +1,11 @@
+{
+  "cases_pass": 360,
+  "comparison": "MODIFIED_KERNEL_STOCK_OFF_VS_SKIP_ON",
+  "expected_cases": 360,
+  "expected_pairs": 180,
+  "pairs_pass": 180,
+  "phase": "full",
+  "semantics": "NC_DELIVERED_DIFFERS",
+  "status": "PASS",
+  "transport_retries": 0
+}

@@ -1,0 +1,938 @@
+--- a/include/uapi/linux/tcp.h
++++ b/include/uapi/linux/tcp.h
+@@ -127,6 +127,42 @@
+ 
+ #define TCP_CM_INQ		TCP_INQ
+ 
++/* SkipOKTCP private experimental ABI (not upstream or standard). */
++#define TCP_SKIPOK_IMPORTANCE	201	/* 0=off, 1=critical, 2=non-critical */
++#define TCP_SKIPOK_SKB_STATS	202	/* P1B read-only diagnostic */
++#define TCP_SKIPOK_RETX_STATS	203	/* P1C experimental diagnostic */
++#define TCP_SKIPOK_ENABLE	204	/* P2A: set before connect or listen */
++#define TCP_SKIPOK_NEGOTIATED	205	/* P2A: read-only 0 or 1 */
++#define TCP_SKIPOK_PROBE_SEND	206	/* P2B: lab control probe, struct tcp_skipok_range */
++#define TCP_SKIPOK_PROBE_RX_COUNT	207	/* P2B diagnostic */
++#define TCP_SKIPOK_PROBE_TX_COUNT	208	/* P2B diagnostic */
++#define TCP_SKIPOK_SKIP_SEND	209	/* P2C: controlled noncritical range */
++#define TCP_SKIPOK_SKIP_RX_COUNT	210	/* P2C receiver accepted skips */
++#define TCP_SKIPOK_SKIP_TX_COUNT	211	/* P2C issued SKIP packets */
++#define TCP_SKIPOK_TX_NEXT_SEQ	212	/* P2C diagnostic snd_nxt */
++#define TCP_SKIPOK_RX_NEXT_SEQ	213	/* P2C diagnostic rcv_nxt */
++#define TCP_SKIPOK_TX_UNA	214	/* P2C diagnostic snd_una */
++#define TCP_SKIPOK_AUTO_RTO	215	/* P2D opt-in bounded RTO SKIP */
++#define TCP_SKIPOK_RTO_TX_COUNT	216	/* P2D RTO SKIP sends */
++#define TCP_SKIPOK_DUP_RX_COUNT	217	/* P2D duplicate SKIP receptions */
++#define TCP_SKIPOK_REPLAY_LAST	218	/* P2D lab duplicate injection */
++#define TCP_SKIPOK_PREFIX_RTO	219	/* P2M: opt-in leading noncritical prefix */
++struct tcp_skipok_range {
++	__u32 start_seq;
++	__u32 end_seq;
++};
++struct tcp_skipok_retx_stats {
++	__u32 retransmit[3];    /* successful TCP retransmission attempts */
++	__u32 fragment[3];      /* tcp_fragment tag copies */
++	__u32 tso_fragment[3];  /* tso_fragment tag copies */
++	__u32 collapse_blocked; /* cross-class retrans collapse prevented */
++	__u32 sack_shift_blocked; /* cross-class SACK shift prevented */
++};
++struct tcp_skipok_skb_stats {
++	__u32 skb_new[3];  /* newly enqueued SKBs by importance */
++	__u32 boundaries;   /* prevented cross-class append */
++	__u32 last_mark;    /* read from last payload SKB */
++};
+ #define TCP_TX_DELAY		37	/* delay outgoing packets by XX usec */
+ 
+ 
+--- a/include/linux/tcp.h
++++ b/include/linux/tcp.h
+@@ -124,6 +124,7 @@
+ 		rcv_wscale : 4;	/* Window scaling to send to receiver	*/
+ 	u8	saw_unknown:1,	/* Received unknown option		*/
+ 		unused:7;
++	u8	skipok_offer; /* lab P2A: observed in this handshake segment */
+ 	u8	num_sacks;	/* Number of SACK blocks		*/
+ 	u16	user_mss;	/* mss requested by user in ioctl	*/
+ 	u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
+@@ -133,6 +134,7 @@
+ {
+ 	rx_opt->tstamp_ok = rx_opt->sack_ok = 0;
+ 	rx_opt->wscale_ok = rx_opt->snd_wscale = 0;
++	rx_opt->skipok_offer = 0;
+ #if IS_ENABLED(CONFIG_SMC)
+ 	rx_opt->smc_ok = 0;
+ #endif
+@@ -165,6 +167,8 @@
+ 						  * after data-in-SYN.
+ 						  */
+ 	u8				syn_tos;
++	u8	skipok_syn_seen;     /* P2A: SYN offered capability */
++	u8	skipok_synack_sent; /* P2A: SYNACK included capability */
+ };
+ 
+ static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
+@@ -465,6 +469,29 @@
+ 	 */
+ 	struct request_sock __rcu *fastopen_rsk;
+ 	struct saved_syn *saved_syn;
++	u8 skipok_importance; /* private P1A opt-in state; 0=off */
++	struct tcp_skipok_skb_stats skipok_skb_stats; /* P1B diagnostics */
++	struct tcp_skipok_retx_stats skipok_retx_stats; /* P1C diagnostic */
++	u8 skipok_enable; /* P2A local opt-in before TCP handshake */
++	u8 skipok_syn_sent; /* P2A actual SYN header contained offer */
++	u8 skipok_negotiated; /* P2A both peers opted in */
++	u8 skipok_probe_pending; /* P2B one-shot control option */
++	u32 skipok_probe_start;
++	u32 skipok_probe_end;
++	u32 skipok_probe_tx_count;
++	u32 skipok_probe_rx_count;
++	u8 skipok_skip_pending; /* P2C one-shot SKIP; P2D adds reliability */
++	u32 skipok_skip_start;
++	u32 skipok_skip_end;
++	u32 skipok_skip_tx_count;
++	u32 skipok_skip_rx_count;
++	u32 skipok_skip_rx_start; /* last accepted range for diagnostics */
++	u32 skipok_skip_rx_end;
++	u8 skipok_rtt_guard_armed; /* P2L: skip ACK must not sample original skb RTT */
++	u8 skipok_auto_rto; /* explicit socket opt-in */
++	u8 skipok_prefix_rto; /* P2M: opt-in leading noncritical prefix */
++	u32 skipok_rto_tx_count;
++	u32 skipok_dup_rx_count;
+ };
+ 
+ enum tsq_enum {
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -619,6 +619,7 @@
+ void tcp_push_one(struct sock *, unsigned int mss_now);
+ void __tcp_send_ack(struct sock *sk, u32 rcv_nxt, u16 flags);
+ void tcp_send_ack(struct sock *sk);
++bool tcp_skipok_try_rto_skip(struct sock *sk); /* P2D */
+ void tcp_send_delayed_ack(struct sock *sk);
+ void tcp_send_loss_probe(struct sock *sk);
+ bool tcp_schedule_loss_probe(struct sock *sk, bool advancing_rto);
+@@ -878,7 +879,8 @@
+ 	__u8		txstamp_ack:1,	/* Record TX timestamp for ack? */
+ 			eor:1,		/* Is skb MSG_EOR marked? */
+ 			has_rxtstamp:1,	/* SKB has a RX timestamp	*/
+-			unused:5;
++			skipok_importance:2, /* experimental TX-only tag */
++			unused:3;
+ 	__u32		ack_seq;	/* Sequence number ACK'd	*/
+ 	union {
+ 		struct {
+--- a/net/ipv4/tcp.c
++++ b/net/ipv4/tcp.c
+@@ -1046,6 +1046,7 @@
+ 	struct sk_buff *skb;
+ 	struct sockcm_cookie sockc;
+ 	int flags, err, copied = 0;
++	u8 skipok_send_importance = READ_ONCE(tp->skipok_importance);
+ 	int mss_now = 0, size_goal, copied_syn = 0;
+ 	int process_backlog = 0;
+ 	int zc = 0;
+@@ -1142,6 +1143,11 @@
+ 		if (skb)
+ 			copy = size_goal - skb->len;
+ 
++		if (copy > 0 && tcp_skb_can_collapse_to(skb) &&
++		    TCP_SKB_CB(skb)->skipok_importance != skipok_send_importance) {
++			tp->skipok_skb_stats.boundaries++;
++			copy = 0;
++		}
+ 		if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
+ 			bool first_skb;
+ 
+@@ -1166,6 +1172,8 @@
+ 			skb->decrypted = !!(flags & MSG_SENDPAGE_DECRYPTED);
+ #endif
+ 			tcp_skb_entail(sk, skb);
++			TCP_SKB_CB(skb)->skipok_importance = skipok_send_importance;
++			tp->skipok_skb_stats.skb_new[skipok_send_importance]++;
+ 			copy = size_goal;
+ 
+ 			/* All packets are restored as if they have
+@@ -1275,6 +1283,9 @@
+ 		if (!copied)
+ 			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
+ 
++		/* Read back the real SKB tag for later validation. */
++		tp->skipok_skb_stats.last_mark =
++			TCP_SKB_CB(skb)->skipok_importance;
+ 		WRITE_ONCE(tp->write_seq, tp->write_seq + copy);
+ 		TCP_SKB_CB(skb)->end_seq += copy;
+ 		tcp_skb_pcount_set(skb, 0);
+@@ -3457,6 +3468,149 @@
+ 
+ 	/* These are data/string values, all the others are ints */
+ 	switch (optname) {
++	case TCP_SKIPOK_PREFIX_RTO: { /* P2M: opt-in leading noncritical prefix */
++		int enabled;
++		if (optlen != sizeof(enabled))
++			return -EINVAL;
++		if (copy_from_sockptr(&enabled, optval, sizeof(enabled)))
++			return -EFAULT;
++		if (enabled != 0 && enabled != 1)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		if (enabled && (sk->sk_state != TCP_ESTABLISHED ||
++				!tp->skipok_negotiated))
++			err = -EOPNOTSUPP;
++		else
++			tp->skipok_prefix_rto = enabled;
++		sockopt_release_sock(sk);
++		return err;
++	}
++	case TCP_SKIPOK_AUTO_RTO: {
++		int enabled;
++		if (optlen != sizeof(enabled))
++			return -EINVAL;
++		if (copy_from_sockptr(&enabled, optval, sizeof(enabled)))
++			return -EFAULT;
++		if (enabled != 0 && enabled != 1)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		if (enabled && (sk->sk_state != TCP_ESTABLISHED ||
++				!tp->skipok_negotiated)) {
++			err = -EOPNOTSUPP;
++		} else {
++			tp->skipok_auto_rto = enabled;
++			err = 0;
++		}
++		sockopt_release_sock(sk);
++		return err;
++	}
++	case TCP_SKIPOK_REPLAY_LAST: {
++		int replay;
++		if (optlen != sizeof(replay))
++			return -EINVAL;
++		if (copy_from_sockptr(&replay, optval, sizeof(replay)))
++			return -EFAULT;
++		if (replay != 1)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		if (sk->sk_state != TCP_ESTABLISHED ||
++		    !tp->skipok_negotiated) {
++			err = -EOPNOTSUPP;
++		} else if (!tp->skipok_skip_tx_count ||
++			   tp->skipok_skip_pending ||
++			   tp->snd_una != tp->snd_nxt ||
++			   tp->snd_una != tp->skipok_skip_end ||
++			   !tcp_rtx_queue_empty(sk) ||
++			   !tcp_write_queue_empty(sk)) {
++			err = -EBUSY;
++		} else {
++			/* Diagnostic replay only; not used by automatic protocol. */
++			tp->skipok_skip_pending = 1;
++			tcp_send_ack(sk);
++			if (tp->skipok_skip_pending) {
++				tp->skipok_skip_pending = 0;
++				err = -ENOSPC;
++			} else {
++				err = 0;
++			}
++		}
++		sockopt_release_sock(sk);
++		return err;
++	}
++	case TCP_SKIPOK_SKIP_SEND: {
++		struct tcp_skipok_range range;
++		struct sk_buff *skb;
++		u32 next_seq;
++		bool valid = true;
++		if (optlen != sizeof(range))
++			return -EINVAL;
++		if (copy_from_sockptr(&range, optval, sizeof(range)))
++			return -EFAULT;
++		if (!after(range.end_seq, range.start_seq) ||
++		    range.end_seq - range.start_seq > 16384U)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		if (sk->sk_state != TCP_ESTABLISHED || !tp->skipok_negotiated) {
++			err = -EOPNOTSUPP;
++		} else if (tp->skipok_skip_pending) {
++			err = -EBUSY;
++		} else if (range.start_seq != tp->snd_una ||
++			   range.end_seq != tp->snd_nxt ||
++			   !tcp_write_queue_empty(sk)) {
++			err = -ERANGE;
++		} else {
++			next_seq = range.start_seq;
++			skb = tcp_rtx_queue_head(sk);
++			while (skb) {
++				if (TCP_SKB_CB(skb)->seq != next_seq ||
++				    TCP_SKB_CB(skb)->skipok_importance != 2 ||
++				    (TCP_SKB_CB(skb)->tcp_flags & (TCPHDR_SYN | TCPHDR_FIN)) ||
++				    after(TCP_SKB_CB(skb)->end_seq, range.end_seq)) {
++					valid = false;
++					break;
++				}
++				next_seq = TCP_SKB_CB(skb)->end_seq;
++				skb = skb_rb_next(skb);
++			}
++			if (!valid || next_seq != range.end_seq) {
++				err = -EPERM; /* missing or critical data */
++			} else {
++				tp->skipok_skip_start = range.start_seq;
++				tp->skipok_skip_end = range.end_seq;
++				tp->skipok_skip_pending = 1;
++				tcp_send_ack(sk);
++				if (tp->skipok_skip_pending)
++					err = -ENOSPC;
++			}
++		}
++		sockopt_release_sock(sk);
++		return err;
++	}
++	case TCP_SKIPOK_PROBE_SEND: {
++		struct tcp_skipok_range range;
++		if (optlen != sizeof(range))
++			return -EINVAL;
++		if (copy_from_sockptr(&range, optval, sizeof(range)))
++			return -EFAULT;
++		if (range.start_seq >= range.end_seq)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		if (sk->sk_state != TCP_ESTABLISHED || !tp->skipok_negotiated) {
++			err = -EOPNOTSUPP;
++		} else if (tp->skipok_probe_pending) {
++			err = -EBUSY;
++		} else {
++			/* P2B is observational ONLY: no retransmission is suppressed. */
++			tp->skipok_probe_start = range.start_seq;
++			tp->skipok_probe_end = range.end_seq;
++			tp->skipok_probe_pending = 1;
++			tcp_send_ack(sk);
++			if (tp->skipok_probe_pending)
++				err = -ENOSPC;
++		}
++		sockopt_release_sock(sk);
++		return err;
++	}
+ 	case TCP_CONGESTION: {
+ 		char name[TCP_CA_NAME_MAX];
+ 
+@@ -3553,6 +3707,12 @@
+ 	sockopt_lock_sock(sk);
+ 
+ 	switch (optname) {
++	case TCP_SKIPOK_ENABLE:
++		if ((val != 0 && val != 1) || sk->sk_state != TCP_CLOSE)
++			err = -EINVAL;
++		else
++			tp->skipok_enable = val;
++		break;
+ 	case TCP_MAXSEG:
+ 		/* Values greater than interface MTU won't take effect. However
+ 		 * at the point when this call is done we typically don't yet
+@@ -3717,6 +3877,12 @@
+ 		else
+ 			tp->recvmsg_inq = val;
+ 		break;
++	case TCP_SKIPOK_IMPORTANCE:
++		if (val < 0 || val > 2)
++			err = -EINVAL;
++		else
++			WRITE_ONCE(tp->skipok_importance, val);
++		break;
+ 	case TCP_TX_DELAY:
+ 		if (val)
+ 			tcp_enable_tx_delay();
+@@ -4022,6 +4188,36 @@
+ 	if (len < 0)
+ 		return -EINVAL;
+ 
++	if (optname == TCP_SKIPOK_RETX_STATS) {
++		struct tcp_skipok_retx_stats stats;
++		int required = sizeof(stats);
++		if (len < required)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		stats = tp->skipok_retx_stats;
++		sockopt_release_sock(sk);
++		if (copy_to_sockptr(optval, &stats, required))
++			return -EFAULT;
++		if (copy_to_sockptr(optlen, &required, sizeof(required)))
++			return -EFAULT;
++		return 0;
++	}
++	if (optname == TCP_SKIPOK_SKB_STATS) {
++		struct tcp_skipok_skb_stats stats;
++		int required = sizeof(stats);
++
++		if (len < required)
++			return -EINVAL;
++		sockopt_lock_sock(sk);
++		stats = tp->skipok_skb_stats;
++		sockopt_release_sock(sk);
++		if (copy_to_sockptr(optval, &stats, required))
++			return -EFAULT;
++		if (copy_to_sockptr(optlen, &required, sizeof(required)))
++			return -EFAULT;
++		return 0;
++	}
++
+ 	len = min_t(unsigned int, len, sizeof(int));
+ 
+ 	switch (optname) {
+@@ -4212,6 +4408,48 @@
+ 		val = tp->fastopen_no_cookie;
+ 		break;
+ 
++	case TCP_SKIPOK_IMPORTANCE:
++		val = READ_ONCE(tp->skipok_importance);
++		break;
++	case TCP_SKIPOK_ENABLE:
++		val = tp->skipok_enable;
++		break;
++	case TCP_SKIPOK_NEGOTIATED:
++		val = tp->skipok_negotiated;
++		break;
++	case TCP_SKIPOK_AUTO_RTO:
++		val = READ_ONCE(tp->skipok_auto_rto);
++		break;
++	case TCP_SKIPOK_PREFIX_RTO:
++		val = READ_ONCE(tp->skipok_prefix_rto);
++		break;
++	case TCP_SKIPOK_RTO_TX_COUNT:
++		val = READ_ONCE(tp->skipok_rto_tx_count);
++		break;
++	case TCP_SKIPOK_DUP_RX_COUNT:
++		val = READ_ONCE(tp->skipok_dup_rx_count);
++		break;
++	case TCP_SKIPOK_SKIP_RX_COUNT:
++		val = READ_ONCE(tp->skipok_skip_rx_count);
++		break;
++	case TCP_SKIPOK_SKIP_TX_COUNT:
++		val = READ_ONCE(tp->skipok_skip_tx_count);
++		break;
++	case TCP_SKIPOK_TX_NEXT_SEQ:
++		val = READ_ONCE(tp->snd_nxt);
++		break;
++	case TCP_SKIPOK_RX_NEXT_SEQ:
++		val = READ_ONCE(tp->rcv_nxt);
++		break;
++	case TCP_SKIPOK_TX_UNA:
++		val = READ_ONCE(tp->snd_una);
++		break;
++	case TCP_SKIPOK_PROBE_RX_COUNT:
++		val = READ_ONCE(tp->skipok_probe_rx_count);
++		break;
++	case TCP_SKIPOK_PROBE_TX_COUNT:
++		val = READ_ONCE(tp->skipok_probe_tx_count);
++		break;
+ 	case TCP_TX_DELAY:
+ 		val = READ_ONCE(tp->tcp_tx_delay);
+ 		break;
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -1600,6 +1600,11 @@
+ 	if ((TCP_SKB_CB(prev)->sacked & TCPCB_TAGBITS) != TCPCB_SACKED_ACKED)
+ 		goto fallback;
+ 
++	if (TCP_SKB_CB(prev)->skipok_importance !=
++	    TCP_SKB_CB(skb)->skipok_importance) {
++		tp->skipok_retx_stats.sack_shift_blocked++;
++		goto fallback;
++	}
+ 	if (!tcp_skb_can_collapse(prev, skb))
+ 		goto fallback;
+ 
+@@ -1689,6 +1694,11 @@
+ 	    (mss != tcp_skb_seglen(skb)))
+ 		goto out;
+ 
++	if (TCP_SKB_CB(prev)->skipok_importance !=
++	    TCP_SKB_CB(skb)->skipok_importance) {
++		tp->skipok_retx_stats.sack_shift_blocked++;
++		goto out;
++	}
+ 	if (!tcp_skb_can_collapse(prev, skb))
+ 		goto out;
+ 	len = skb->len;
+@@ -3361,6 +3371,7 @@
+ 	long ca_rtt_us = -1L;
+ 	u32 pkts_acked = 0;
+ 	bool rtt_update;
++	bool skipok_synthetic_ack = false;
+ 	int flag = 0;
+ 
+ 	first_ackt = 0;
+@@ -3370,6 +3381,14 @@
+ 		const u32 start_seq = scb->seq;
+ 		u8 sacked = scb->sacked;
+ 		u32 acked_pcount;
++		/* P2L: ACK of intentionally skipped bytes is not an RTT sample.
++		 * SKIP uses cumulative ACK to free the original (lost) skb.
++		 * Its transmission timestamp does not measure delivery RTT.
++		 */
++		if (tp->skipok_rtt_guard_armed &&
++		    !before(scb->seq, tp->skipok_skip_start) &&
++		    !after(scb->end_seq, tp->skipok_skip_end))
++			skipok_synthetic_ack = true;
+ 
+ 		/* Determine how many packets and what bytes were acked, tso and else */
+ 		if (after(scb->end_seq, tp->snd_una)) {
+@@ -3475,8 +3494,16 @@
+ 		sack_rtt_us = tcp_stamp_us_delta(tp->tcp_mstamp, sack->first_sackt);
+ 		ca_rtt_us = tcp_stamp_us_delta(tp->tcp_mstamp, sack->last_sackt);
+ 	}
+-	rtt_update = tcp_ack_update_rtt(sk, flag, seq_rtt_us, sack_rtt_us,
+-					ca_rtt_us, sack->rate);
++	/* A virtual ACK must not create an RTT sample, including the
++	 * timestamp-echo fallback. Only later genuinely delivered data
++	 * can reset retransmission backoff under RFC6298.
++	 */
++	rtt_update = skipok_synthetic_ack ? false :
++		tcp_ack_update_rtt(sk, flag, seq_rtt_us, sack_rtt_us,
++				   ca_rtt_us, sack->rate);
++	if (tp->skipok_rtt_guard_armed &&
++	    !before(tp->snd_una, tp->skipok_skip_end))
++		tp->skipok_rtt_guard_armed = 0;
+ 
+ 	if (flag & FLAG_ACKED) {
+ 		flag |= FLAG_SET_XMIT_TIMER;  /* set TLP or RTO timer */
+@@ -4197,6 +4224,7 @@
+ 	ptr = (const unsigned char *)(th + 1);
+ 	opt_rx->saw_tstamp = 0;
+ 	opt_rx->saw_unknown = 0;
++	opt_rx->skipok_offer = 0;
+ 
+ 	while (length > 0) {
+ 		int opcode = *ptr++;
+@@ -4281,6 +4309,13 @@
+ 				break;
+ 
+ 			case TCPOPT_EXP:
++				/* Laboratory SkipOK capability, no SKIP data yet. */
++				if (th->syn && opsize == 8 &&
++				    get_unaligned_be32(ptr) == 0x534b4f4bU &&
++				    ptr[4] == 1 && ptr[5] == 0) {
++					opt_rx->skipok_offer = 1;
++					break;
++				}
+ 				/* Fast Open option shares code 254 using a
+ 				 * 16 bits magic number.
+ 				 */
+@@ -6037,6 +6072,124 @@
+  *	the rest is checked inline. Fast processing is turned on in
+  *	tcp_data_queue when everything is OK.
+  */
++/* Laboratory P2B: validate the on-wire SKOK range probe but DO NOT skip data. */
++static void tcp_skipok_observe_probe(struct sock *sk, const struct sk_buff *skb)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	const struct tcphdr *th = (const struct tcphdr *)skb->data;
++	const u8 *ptr = (const u8 *)(th + 1);
++	int remaining = (th->doff << 2) - sizeof(*th);
++
++	if (!tp->skipok_negotiated || !th->ack || th->syn || th->rst ||
++	    skb->len != (th->doff << 2))
++		return;
++
++	while (remaining > 0) {
++		u8 kind = *ptr++;
++		u8 size;
++		remaining--;
++		if (kind == TCPOPT_EOL)
++			return;
++		if (kind == TCPOPT_NOP)
++			continue;
++		if (remaining < 1)
++			return;
++		size = *ptr;
++		if (size < 2 || size - 1 > remaining)
++			return;
++		if (kind == TCPOPT_EXP && size == 16 &&
++		    get_unaligned_be32(ptr + 1) == 0x534b4f4bU &&
++		    ptr[5] == 1 && ptr[6] == 1 &&
++		    get_unaligned_be32(ptr + 7) <
++		    get_unaligned_be32(ptr + 11)) {
++			tp->skipok_probe_rx_count++;
++			return;
++		}
++		ptr += size - 1;
++		remaining -= size - 1;
++	}
++}
++
++/* P2C: lab-only, intentionally strict receiver-side hole advancement.
++ * Never skip bytes when the application still has earlier bytes to read.
++ * No control retransmission or durable gap-event queue yet (P2D/P2E).
++ */
++static void tcp_skipok_apply_skip(struct sock *sk, const struct sk_buff *skb)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	const struct tcphdr *th = (const struct tcphdr *)skb->data;
++	const u8 *ptr = (const u8 *)(th + 1);
++	int remaining = (th->doff << 2) - sizeof(*th);
++
++	if (!tp->skipok_negotiated || !th->ack || th->syn || th->rst || th->fin ||
++	    skb->len != (th->doff << 2))
++		return;
++
++	while (remaining > 0) {
++		u8 kind = *ptr++;
++		u8 size;
++		u32 start, end;
++		struct sk_buff *first;
++
++		remaining--;
++		if (kind == TCPOPT_EOL)
++			return;
++		if (kind == TCPOPT_NOP)
++			continue;
++		if (remaining < 1)
++			return;
++		size = *ptr;
++		if (size < 2 || size - 1 > remaining)
++			return;
++		if (kind != TCPOPT_EXP || size != 16 ||
++		    get_unaligned_be32(ptr + 1) != 0x534b4f4bU ||
++		    ptr[5] != 1 || ptr[6] != 2)
++			goto next_option;
++
++		start = get_unaligned_be32(ptr + 7);
++		end = get_unaligned_be32(ptr + 11);
++		if (tp->skipok_skip_rx_count &&
++		    start == tp->skipok_skip_rx_start &&
++		    end == tp->skipok_skip_rx_end &&
++		    !after(end, tp->rcv_nxt)) {
++			tp->skipok_dup_rx_count++;
++			tcp_send_ack(sk);
++			return;
++		}
++		if (start != tp->rcv_nxt || !after(end, start) ||
++		    end - start > 16384U ||
++		    after(end, start + tcp_receive_window(tp)) ||
++		    READ_ONCE(tp->copied_seq) != start ||
++		    !skb_queue_empty(&sk->sk_receive_queue))
++			return;
++
++		first = skb_rb_first(&tp->out_of_order_queue);
++		if (first && before(TCP_SKB_CB(first)->seq, end))
++			return;
++
++		/* Since copied_seq == rcv_nxt and no earlier user bytes are
++		 * buffered, both pointers may advance without losing critical data.
++		 */
++		tcp_rcv_nxt_update(tp, end);
++		WRITE_ONCE(tp->copied_seq, end);
++		tp->skipok_skip_rx_count++;
++		tp->skipok_skip_rx_start = start;
++		tp->skipok_skip_rx_end = end;
++		if (first) {
++			tcp_ofo_queue(sk);
++			if (tp->rx_opt.num_sacks)
++				tcp_sack_remove(tp);
++			tcp_data_ready(sk);
++		}
++		/* Crucial: inform sender of the accepted SKIP via cumulative ACK. */
++		tcp_send_ack(sk);
++		return;
++next_option:
++		ptr += size - 1;
++		remaining -= size - 1;
++	}
++}
++
+ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb)
+ {
+ 	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
+@@ -6196,6 +6349,10 @@
+ 
+ 	if (!tcp_validate_incoming(sk, skb, th, 1))
+ 		return;
++	/* Read-only P2B probe; this must not advance rcv_nxt. */
++	tcp_skipok_observe_probe(sk, skb);
++	/* Control is applied only after tcp_validate_incoming(). */
++	tcp_skipok_apply_skip(sk, skb);
+ 
+ step5:
+ 	reason = tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT);
+@@ -6491,6 +6648,9 @@
+ 
+ 		smp_mb();
+ 
++		/* Set only after the SYN-ACK has passed TCP validity checks. */
++		tp->skipok_negotiated = tp->skipok_enable &&
++			tp->skipok_syn_sent && tp->rx_opt.skipok_offer;
+ 		tcp_finish_connect(sk, skb);
+ 
+ 		fastopen_fail = (tp->syn_fastopen || tp->syn_data) &&
+@@ -6989,6 +7149,10 @@
+ 	tcp_rsk(req)->rcv_nxt = TCP_SKB_CB(skb)->seq + 1;
+ 	tcp_rsk(req)->snt_synack = 0;
+ 	tcp_rsk(req)->last_oow_ack_time = 0;
++	tcp_rsk(req)->skipok_syn_seen =
++		tcp_sk(sk)->skipok_enable && rx_opt->skipok_offer &&
++		!req->syncookie;
++	tcp_rsk(req)->skipok_synack_sent = 0;
+ 	req->mss = rx_opt->mss_clamp;
+ 	req->ts_recent = rx_opt->saw_tstamp ? rx_opt->rcv_tsval : 0;
+ 	ireq->tstamp_ok = rx_opt->tstamp_ok;
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -427,6 +427,13 @@
+ #define OPTION_FAST_OPEN_COOKIE	BIT(8)
+ #define OPTION_SMC		BIT(9)
+ #define OPTION_MPTCP		BIT(10)
++#define OPTION_SKIPOK		BIT(11) /* lab-only P2A */
++#define TCPOLEN_SKIPOK_OFFER	8
++#define SKIPOK_EXID		0x534b4f4bU
++#define OPTION_SKIPOK_PROBE	BIT(12) /* P2B lab-only */
++#define TCPOLEN_SKIPOK_PROBE	16
++#define OPTION_SKIPOK_SKIP	BIT(13) /* P2C true receiver-advancing SKIP */
++#define TCPOLEN_SKIPOK_SKIP	16
+ 
+ static void smc_options_write(__be32 *ptr, u16 *options)
+ {
+@@ -444,6 +451,10 @@
+ }
+ 
+ struct tcp_out_options {
++	u32 skipok_probe_start;
++	u32 skipok_probe_end;
++	u32 skipok_skip_start;
++	u32 skipok_skip_end;
+ 	u16 options;		/* bit field of OPTION_* */
+ 	u16 mss;		/* 0 to disable */
+ 	u8 ws;			/* window scale, 0 to disable */
+@@ -713,6 +724,32 @@
+ 		ptr += (len + 3) >> 2;
+ 	}
+ 
++	if (unlikely(OPTION_SKIPOK & options)) {
++		*ptr++ = htonl((TCPOPT_EXP << 24) |
++				 (TCPOLEN_SKIPOK_OFFER << 16) | 0x534b);
++		*ptr++ = htonl(0x4f4b0100); /* SKOK, v1, flags=0 */
++	}
++	if (unlikely(OPTION_SKIPOK_SKIP & options)) {
++		*ptr++ = htonl((TCPOPT_EXP << 24) |
++				 (TCPOLEN_SKIPOK_SKIP << 16) | 0x534b);
++		*ptr++ = htonl(0x4f4b0102); /* SKOK, v1, SKIP subtype 2 */
++		*ptr++ = htonl(opts->skipok_skip_start);
++		*ptr++ = htonl(opts->skipok_skip_end);
++		tp->skipok_skip_pending = 0;
++		/* P2L: a receiver ACK of this control covers undelivered bytes. */
++		tp->skipok_rtt_guard_armed = 1;
++		tp->skipok_skip_tx_count++;
++	}
++	if (unlikely(OPTION_SKIPOK_PROBE & options)) {
++		*ptr++ = htonl((TCPOPT_EXP << 24) |
++				 (TCPOLEN_SKIPOK_PROBE << 16) | 0x534b);
++		*ptr++ = htonl(0x4f4b0101); /* SKOK, v1, probe subtype 1 */
++		*ptr++ = htonl(opts->skipok_probe_start);
++		*ptr++ = htonl(opts->skipok_probe_end);
++		/* The P2B probe is best-effort, not a committed SKIP. */
++		tp->skipok_probe_pending = 0;
++		tp->skipok_probe_tx_count++;
++	}
+ 	smc_options_write(ptr, &options);
+ 
+ 	mptcp_options_write(th, ptr, tp, opts);
+@@ -847,6 +884,12 @@
+ 		}
+ 	}
+ 
++	/* Offer ONLY when explicitly enabled before connect(). */
++	if (tp->skipok_enable && remaining >= TCPOLEN_SKIPOK_OFFER) {
++		opts->options |= OPTION_SKIPOK;
++		remaining -= TCPOLEN_SKIPOK_OFFER;
++		tp->skipok_syn_sent = 1;
++	}
+ 	bpf_skops_hdr_opt_len(sk, skb, NULL, NULL, 0, opts, &remaining);
+ 
+ 	return MAX_TCP_OPTION_SPACE - remaining;
+@@ -917,6 +960,15 @@
+ 
+ 	smc_set_option_cond(tcp_sk(sk), ireq, opts, &remaining);
+ 
++	/* Passive side responds only to a SYN that offered SkipOK.
++	 * Do not negotiate using SYN cookies: request metadata is lost.
++	 */
++	if (tcp_sk(sk)->skipok_enable && tcp_rsk(req)->skipok_syn_seen &&
++	    !req->syncookie && remaining >= TCPOLEN_SKIPOK_OFFER) {
++		opts->options |= OPTION_SKIPOK;
++		remaining -= TCPOLEN_SKIPOK_OFFER;
++		tcp_rsk(req)->skipok_synack_sent = 1;
++	}
+ 	bpf_skops_hdr_opt_len((struct sock *)sk, skb, req, syn_skb,
+ 			      synack_type, opts, &remaining);
+ 
+@@ -988,6 +1040,27 @@
+ 			opts->num_sack_blocks * TCPOLEN_SACK_PERBLOCK;
+ 	}
+ 
++	/* Only negotiated pure ACKs carry a P2C SKIP. */
++	if (tp->skipok_negotiated && tp->skipok_skip_pending &&
++	    skb && !skb->len &&
++	    TCP_SKB_CB(skb)->tcp_flags == TCPHDR_ACK &&
++	    MAX_TCP_OPTION_SPACE - size >= TCPOLEN_SKIPOK_SKIP) {
++		opts->options |= OPTION_SKIPOK_SKIP;
++		opts->skipok_skip_start = tp->skipok_skip_start;
++		opts->skipok_skip_end = tp->skipok_skip_end;
++		size += TCPOLEN_SKIPOK_SKIP;
++	}
++	/* Only a header-only ACK may carry this P2B diagnostic probe. */
++	if (tp->skipok_negotiated && tp->skipok_probe_pending &&
++	    skb && !skb->len &&
++	    TCP_SKB_CB(skb)->tcp_flags == TCPHDR_ACK &&
++	    MAX_TCP_OPTION_SPACE - size >= TCPOLEN_SKIPOK_PROBE) {
++		opts->options |= OPTION_SKIPOK_PROBE;
++		opts->skipok_probe_start = tp->skipok_probe_start;
++		opts->skipok_probe_end = tp->skipok_probe_end;
++		size += TCPOLEN_SKIPOK_PROBE;
++	}
++
+ 	if (unlikely(BPF_SOCK_OPS_TEST_FLAG(tp,
+ 					    BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG))) {
+ 		unsigned int remaining = MAX_TCP_OPTION_SPACE - size;
+@@ -1608,9 +1681,12 @@
+ 	TCP_SKB_CB(skb)->tcp_flags = flags & ~(TCPHDR_FIN | TCPHDR_PSH);
+ 	TCP_SKB_CB(buff)->tcp_flags = flags;
+ 	TCP_SKB_CB(buff)->sacked = TCP_SKB_CB(skb)->sacked;
++	TCP_SKB_CB(buff)->skipok_importance = TCP_SKB_CB(skb)->skipok_importance;
+ 	tcp_skb_fragment_eor(skb, buff);
+ 
+ 	skb_split(skb, buff, len);
++	if (TCP_SKB_CB(buff)->skipok_importance < 3)
++		tp->skipok_retx_stats.fragment[TCP_SKB_CB(buff)->skipok_importance]++;
+ 
+ 	skb_set_delivery_time(buff, skb->tstamp, SKB_CLOCK_MONOTONIC);
+ 	tcp_fragment_tstamp(skb, buff);
+@@ -2170,6 +2246,8 @@
+ 	tcp_skb_fragment_eor(skb, buff);
+ 
+ 	skb_split(skb, buff, len);
++	if (TCP_SKB_CB(buff)->skipok_importance < 3)
++		tcp_sk(sk)->skipok_retx_stats.tso_fragment[TCP_SKB_CB(buff)->skipok_importance]++;
+ 	tcp_fragment_tstamp(skb, buff);
+ 
+ 	/* Fix up tso_factor for both original and new SKB.  */
+@@ -3245,6 +3323,11 @@
+ 		if (!tcp_can_collapse(sk, skb))
+ 			break;
+ 
++		if (TCP_SKB_CB(to)->skipok_importance !=
++		    TCP_SKB_CB(skb)->skipok_importance) {
++			tp->skipok_retx_stats.collapse_blocked++;
++			break;
++		}
+ 		if (!tcp_skb_can_collapse(to, skb))
+ 			break;
+ 
+@@ -3396,12 +3479,80 @@
+ 	return err;
+ }
+ 
++/* P2D: bounded automatic SKIP on a real TCP retransmission timeout.
++ * A new RTO retries the same control range when its ACK was lost.
++ * Default: OFF. No attempt at general SACK/RACK/TLP suppression here.
++ */
++bool tcp_skipok_try_rto_skip(struct sock *sk)
++{
++	struct tcp_sock *tp = tcp_sk(sk);
++	struct sk_buff *skb;
++	u32 next_seq, end_seq, start_seq;
++
++	if (sk->sk_state != TCP_ESTABLISHED || !tp->skipok_negotiated ||
++	    !tp->skipok_auto_rto || tp->skipok_skip_pending ||
++	    !tcp_write_queue_empty(sk))
++		return false;
++
++	start_seq = tp->snd_una;
++	end_seq = tp->snd_nxt;
++	if (!after(end_seq, start_seq) ||
++	    (!tp->skipok_prefix_rto && end_seq - start_seq > 16384U))
++		return false;
++
++	next_seq = start_seq;
++	skb = tcp_rtx_queue_head(sk);
++	if (!skb)
++		return false;
++	while (skb) {
++		/* P2M: opt-in leading noncritical prefix only. Do not cross
++		 * a critical skb, a sequence discontinuity, or a partial skb.
++		 * The ordinary mode remains strict all-outstanding-noncritical.
++		 */
++		if (TCP_SKB_CB(skb)->seq != next_seq ||
++		    (TCP_SKB_CB(skb)->tcp_flags & (TCPHDR_SYN | TCPHDR_FIN)) ||
++		    !after(TCP_SKB_CB(skb)->end_seq, next_seq) ||
++		    after(TCP_SKB_CB(skb)->end_seq, end_seq))
++			return false;
++		if (TCP_SKB_CB(skb)->skipok_importance != 2) {
++			if (!tp->skipok_prefix_rto || next_seq == start_seq)
++				return false;
++			break;
++		}
++		if (TCP_SKB_CB(skb)->end_seq - start_seq > 16384U)
++			return false;
++		next_seq = TCP_SKB_CB(skb)->end_seq;
++		skb = skb_rb_next(skb);
++	}
++	if (!tp->skipok_prefix_rto && next_seq != end_seq)
++		return false;
++	if (next_seq == start_seq)
++		return false;
++	/* Only [snd_una, next_seq) is skipped; subsequent critical
++	 * bytes remain in retransmission queue for normal TCP recovery.
++	 */
++	end_seq = next_seq;
++	tp->skipok_skip_start = start_seq;
++	tp->skipok_skip_end = end_seq;
++	tp->skipok_skip_pending = 1;
++	tcp_send_ack(sk);
++	if (tp->skipok_skip_pending) {
++		/* No control was written; fall back to ordinary retransmit. */
++		tp->skipok_skip_pending = 0;
++		return false;
++	}
++	tp->skipok_rto_tx_count++;
++	return true;
++}
++
+ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
+ 	int err = __tcp_retransmit_skb(sk, skb, segs);
+ 
+ 	if (err == 0) {
++		if (skb->len && TCP_SKB_CB(skb)->skipok_importance < 3)
++			tp->skipok_retx_stats.retransmit[TCP_SKB_CB(skb)->skipok_importance]++;
+ #if FASTRETRANS_DEBUG > 0
+ 		if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_RETRANS) {
+ 			net_dbg_ratelimited("retrans_out leaked\n");
+--- a/net/ipv4/tcp_timer.c
++++ b/net/ipv4/tcp_timer.c
+@@ -600,6 +600,19 @@
+ 	tcp_enter_loss(sk);
+ 
+ 	tcp_update_rto_stats(sk);
++	if (tcp_skipok_try_rto_skip(sk)) {
++		/* A control-only SKIP bypasses tcp_retransmit_skb(), which
++		 * normally records the retransmission episode start timestamp.
++		 * Without it, the next RTO can falsely hit tcp_write_timeout().
++		 * Use the oldest outstanding skb's original transmit timestamp,
++		 * matching tcp_retransmit_skb()'s ordinary RTO accounting.
++		 */
++		if (!tp->retrans_stamp)
++			tp->retrans_stamp = tcp_skb_timestamp(skb);
++		/* Control-only send; do not mark retransmitted data. */
++		icsk->icsk_backoff++;
++		goto out_reset_timer;
++	}
+ 	if (tcp_retransmit_skb(sk, tcp_rtx_queue_head(sk), 1) > 0) {
+ 		/* Retransmission failed because of local congestion,
+ 		 * Let senders fight for local resources conservatively.
+--- a/net/ipv4/tcp_minisocks.c
++++ b/net/ipv4/tcp_minisocks.c
+@@ -510,6 +510,9 @@
+ 
+ 	/* Now setup tcp_sock */
+ 	newtp->pred_flags = 0;
++	newtp->skipok_negotiated = newtp->skipok_enable &&
++		treq->skipok_syn_seen && treq->skipok_synack_sent &&
++		!req->syncookie;
+ 
+ 	seq = treq->rcv_isn + 1;
+ 	newtp->rcv_wup = seq;

@@ -1,0 +1,9 @@
+{
+  "cases": 27,
+  "config_equivalent": false,
+  "groups": 9,
+  "scope": "same_host_2x_diskless_VM_with_host_NC_ingress_drop_proxy",
+  "source_provenance": "PGP_verified_Linux_6.6.158",
+  "status": "PASS",
+  "warning": "No claim of fully config-matched or original two-host equivalence"
+}

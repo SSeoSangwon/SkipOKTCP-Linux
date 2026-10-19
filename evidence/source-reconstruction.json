@@ -1,0 +1,55 @@
+{
+  "status": "SOURCE_PATCH_RECONSTRUCTION_PASS",
+  "mode": "LIVE_DEVELOPMENT_SOURCE_AND_ISOLATED_REPLAY",
+  "initial_feature_markers": {
+    "P2D_RTO": true,
+    "P2L_RTT_GUARD": true,
+    "P2M_PREFIX_RTO": true
+  },
+  "candidate_feature_markers": {
+    "P2D_RTO": true,
+    "P2L_RTT_GUARD": true,
+    "P2M_PREFIX_RTO": true
+  },
+  "changed_files": [
+    "include/uapi/linux/tcp.h",
+    "include/linux/tcp.h",
+    "include/net/tcp.h",
+    "net/ipv4/tcp.c",
+    "net/ipv4/tcp_input.c",
+    "net/ipv4/tcp_output.c",
+    "net/ipv4/tcp_timer.c",
+    "net/ipv4/tcp_minisocks.c"
+  ],
+  "patch_sha256": "8f08fac195b909c8e3d0543e9d82de43714b2115fac962f1b59d59aa800fa094",
+  "patch_reapplied_byte_exact": true,
+  "input_sha256": {
+    "include/uapi/linux/tcp.h": "880752eb7445782ba8c15845c9bdbea40452da8585bca3311b890fd553a0d454",
+    "include/linux/tcp.h": "0af7d96960f810f88162f5e8f90950095b027c017aa06b31167cb3475f9bd995",
+    "include/net/tcp.h": "be39be8db5c6befc17b66f1113585ae8eb4e6e517a0c62b08cdc5854bc8a14b7",
+    "net/ipv4/tcp.c": "f9cbbf2169ad86555921307ad1866f9e0cc689157457a776f2046721a25b9ab2",
+    "net/ipv4/tcp_input.c": "686fce8b851227a8e899dca65c0d1db1744dc0e6a438e9b2b3b71d5ae106a45d",
+    "net/ipv4/tcp_output.c": "9a2095b4da5b7f1554d65a2ea7811a3bfa13d19c94ad72aa58f160a04b375593",
+    "net/ipv4/tcp_timer.c": "5662faed6023ad18928d1b56aa48d8eea54d7092cf322f9e09267431891ad04e",
+    "net/ipv4/tcp_minisocks.c": "94b5720baad385413dbd4d6b52b0192e26de12358dfcb3e9119c236f542baafe"
+  },
+  "reconstructed_sha256": {
+    "include/uapi/linux/tcp.h": "880752eb7445782ba8c15845c9bdbea40452da8585bca3311b890fd553a0d454",
+    "include/linux/tcp.h": "0af7d96960f810f88162f5e8f90950095b027c017aa06b31167cb3475f9bd995",
+    "include/net/tcp.h": "be39be8db5c6befc17b66f1113585ae8eb4e6e517a0c62b08cdc5854bc8a14b7",
+    "net/ipv4/tcp.c": "f9cbbf2169ad86555921307ad1866f9e0cc689157457a776f2046721a25b9ab2",
+    "net/ipv4/tcp_input.c": "686fce8b851227a8e899dca65c0d1db1744dc0e6a438e9b2b3b71d5ae106a45d",
+    "net/ipv4/tcp_output.c": "9a2095b4da5b7f1554d65a2ea7811a3bfa13d19c94ad72aa58f160a04b375593",
+    "net/ipv4/tcp_timer.c": "5662faed6023ad18928d1b56aa48d8eea54d7092cf322f9e09267431891ad04e",
+    "net/ipv4/tcp_minisocks.c": "94b5720baad385413dbd4d6b52b0192e26de12358dfcb3e9119c236f542baafe"
+  },
+  "replay_error": null,
+  "binary_equivalence": "NOT_VERIFIED",
+  "source_completeness": "EIGHT_KNOWN_KERNEL_FILES_ONLY_OTHER_FILE_CHANGES_NOT_EXCLUDED",
+  "limitations": [
+    "The recovered source reflects capture-time state and has not been proven identical to the historical B9E build-time state.",
+    "Full Linux source-tree equality outside the eight known changed files is unverified.",
+    "The isolated rebuild is not byte-identical to the B9E image and has not been independently runtime-tested.",
+    "The original Fall 2025 source is unavailable; identity with the original project implementation is not claimed."
+  ]
+}

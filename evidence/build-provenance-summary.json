@@ -1,0 +1,35 @@
+{
+  "note": "Curated from user-provided console outputs and seedfix provenance report. Not a raw build log.",
+  "source_reconstruction": {
+    "status": "SOURCE_PATCH_RECONSTRUCTION_PASS",
+    "patch_sha256": "8f08fac195b909c8e3d0543e9d82de43714b2115fac962f1b59d59aa800fa094",
+    "replay_exact_for_known_eight_files": true,
+    "source_completeness": "EIGHT_KNOWN_KERNEL_FILES_ONLY_OTHER_FILE_CHANGES_NOT_EXCLUDED"
+  },
+  "isolated_kernel_build": {
+    "status": "PASS",
+    "rebuilt_bzimage_sha256": "ff4e3ef2d308970f65ec64ea7c966170fca1bccbe06ef13c1f99806197c911b6",
+    "rebuilt_config_sha256": "c616153e345fd39f9e75bd62dd1eb6d0c00173a83f40c3b870814fa89b7179d8"
+  },
+  "b9e_image": {
+    "local_and_seedfix_guest_match": true,
+    "sha256": "ea1deeaaeb01e03ae23db07ee097ad1ff909dc0c2985201a21afe5d28c766d9b"
+  },
+  "dev_source": {
+    "current_8_files_match": true,
+    "matched_files": 8
+  },
+  "config_provenance": {
+    "dev_vs_seedfix_diff_count": 1,
+    "rebuilt_vs_seedfix_diff_count": 22,
+    "seedfix_iso9660": "y",
+    "rebuilt_iso9660": "m",
+    "rebuilt_gcc": "9.4.0",
+    "seedfix_gcc": "13.3.0"
+  },
+  "binary_identity": {
+    "isolated_rebuild_byte_identical_to_B9E": false,
+    "historical_full_source_tree_identity": "NOT_PROVEN"
+  },
+  "scope": "Source patch validation and build success concern eight known changed files; the original B9E experimental kernel binary has separate execution evidence."
+}
