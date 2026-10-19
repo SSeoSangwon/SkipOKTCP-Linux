@@ -43,6 +43,11 @@ The implementation includes:
 
 The extension uses private, experimental TCP socket-option values and is **not** compatible with stock Linux peers for SKIP operation.
 
+## Technical Documentation
+
+- [Implementation Details](docs/IMPLEMENTATION.md)
+- [Reproducibility](docs/REPRODUCIBILITY.md)
+
 ## Tests / Validation
 
 The available source and build evidence supports the following results:
